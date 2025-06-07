@@ -1,0 +1,1 @@
+Collect this prompt literally into input.txt
