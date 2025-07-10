@@ -1,0 +1,182 @@
+## Sunlight Display Tuner - Computer Engineer Log
+
+**Timestamp:** 2023-11-15 12:00:00
+
+**Project:** Sunlight Display Tuner
+**Objective:** Create an Android application to manage display settings for optimal outdoor visibility and monitor device temperature.
+**Target Audience (of this log):** Computer Engineer
+**Technologies:** Kotlin, Jetpack Compose, MVVM, Android 13+ (API 33+)
+
+**Log Purpose:** To document the development process, including technical specifications, API usage, challenges, code snippets, and architectural decisions.
+
+---
+**Phase: Initial Setup**
+
+*   **Project Structure:** Standard Android Studio project layout.
+    *   `settings.gradle.kts`: Defines project name and includes the `:app` module.
+    *   `build.gradle.kts` (root): Specifies versions for Android Gradle Plugin and Kotlin Android Plugin.
+    *   `app/build.gradle.kts`: Configures application ID, SDK versions (minSdk 26, targetSdk 34, compileSdk 34), dependencies (Compose, ViewModel, Core KTX, Activity Compose, Material3), and enables Jetpack Compose.
+    *   `app/src/main/AndroidManifest.xml`: Declares `MainActivity`, basic app attributes, and initial permissions (`WRITE_SETTINGS`, `BATTERY_STATS` - though `WRITE_SETTINGS` is special and `BATTERY_STATS` might not be strictly needed for temperature via `ACTION_BATTERY_CHANGED`).
+    *   `app/src/main/java/com/example/sunlightdisplaytuner/`: Main package for Kotlin code.
+        *   `MainActivity.kt`: Entry point, sets up Compose content.
+        *   `ui/theme/`: Standard Compose theme files (`Color.kt`, `Theme.kt`, `Type.kt`).
+    *   `app/src/main/res/`: Standard resource directories.
+*   **Branch:** `android_sun_app` (conceptual for this environment).
+*   **Initial Dependencies:**
+    *   `androidx.core:core-ktx`
+    *   `androidx.lifecycle:lifecycle-runtime-ktx`
+    *   `androidx.activity:activity-compose`
+    *   `androidx.compose:compose-bom` (platform)
+    *   `androidx.compose.ui:ui`, `ui-graphics`, `ui-tooling-preview`, `material3`
+    *   `androidx.lifecycle:lifecycle-viewmodel-compose`, `lifecycle-viewmodel-ktx`
+---
+
+**Phase: Core Application Structure (MVVM)**
+*   `MainViewModel.kt`: Created in `ui.main` package. Inherits from `AndroidViewModel`.
+    *   Holds `StateFlow` for UI-related data (e.g., `brightnessSliderPosition`, `systemBrightness`, `isAdaptiveBrightnessEnabled`, `deviceTemperature`).
+    *   Exposes functions to modify state and interact with system services.
+*   `MainScreen.kt`: Created in `ui.main` package. Main Composable function.
+    *   Uses `Scaffold` for basic Material Design layout (TopAppBar).
+    *   Observes `StateFlow` from `MainViewModel` using `collectAsState()`.
+    *   Initial layout includes placeholder `Text` elements for upcoming features.
+*   `MainActivity.kt`:
+    *   Updated to use `by viewModels()` delegate to get an instance of `MainViewModel`.
+    *   `setContent` block now calls `MainScreen(mainViewModel)`.
+---
+
+**Feature 1: Master Brightness Control**
+*   **Objective:** Allow manual adjustment of screen brightness via a slider.
+*   **UI (`MainScreen.kt`):**
+    *   Added a `BrightnessControl` Composable containing a `Text` label (displaying brightness as percentage and raw system value) and a `Slider`.
+    *   Slider value range: 0.0f to 1.0f.
+    *   Slider `enabled` state is bound to `hasWriteSettingsPermission`.
+    *   If `WRITE_SETTINGS` permission is not granted, a `PermissionRequestUI` Card is displayed, prompting the user to grant permission and providing a button to open the relevant system settings page.
+*   **ViewModel (`MainViewModel.kt`):**
+    *   `brightnessSliderPosition`: `MutableStateFlow<Float>` (0.0f to 1.0f) for the slider.
+    *   `systemBrightness`: `MutableStateFlow<Int>` (0 to 255) for the actual system value.
+    *   `loadInitialBrightness()`:
+        *   Called in `init {}`.
+        *   Reads `Settings.System.SCREEN_BRIGHTNESS` using `contentResolver`.
+        *   Updates both `_systemBrightness` and `_brightnessSliderPosition` (after conversion).
+        *   Handles `Settings.SettingNotFoundException`.
+    *   `onBrightnessSliderChanged(sliderValue: Float)`:
+        *   Updates `_brightnessSliderPosition`.
+        *   Converts slider value to system brightness (0-255).
+        *   Updates `_systemBrightness`.
+        *   Writes the new value to `Settings.System.SCREEN_BRIGHTNESS` using `Settings.System.putInt()`.
+        *   This operation requires `android.permission.WRITE_SETTINGS`. ViewModel catches `SecurityException` but expects UI to check permission first.
+    *   Helper functions `systemBrightnessToSliderPosition` and `sliderPositionToSystemBrightness` for conversion.
+*   **Permissions (`PermissionUtils.kt`, `MainScreen.kt`, `AndroidManifest.xml`):**
+    *   `android.permission.WRITE_SETTINGS` declared in `AndroidManifest.xml` (with `tools:ignore="ProtectedPermissions"` as it's a special permission).
+    *   `PermissionUtils.canWriteSettings(context: Context): Boolean`: Checks if the app can write system settings using `Settings.System.canWrite()`.
+    *   `MainScreen.kt`:
+        *   Uses `remember { mutableStateOf(PermissionUtils.canWriteSettings(context)) }` to track permission status.
+        *   Uses `rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult())` to launch the `Settings.ACTION_MANAGE_WRITE_SETTINGS` intent.
+        *   The intent URI is `package:${context.packageName}`.
+        *   On returning from the settings screen, `PermissionUtils.canWriteSettings(context)` is re-checked to update the permission status.
+        *   If permission is granted, `mainViewModel.loadInitialBrightness()` is called to refresh.
+        *   If not granted, UI elements (slider) are disabled, and a message/button to request permission is shown.
+*   **Technical Challenges/Notes:**
+    *   `WRITE_SETTINGS` is a special permission. It cannot be requested at runtime like dangerous permissions. The user must be taken to a specific system settings screen.
+    *   The system brightness value is 0-255. The slider uses 0.0f-1.0f for easier use, requiring conversion.
+    *   Ensuring the UI correctly reflects the permission state (enabled/disabled controls, prompts) is crucial.
+    *   The app should gracefully handle the case where permission is denied or revoked.
+    *   `loadInitialBrightness` is important to synchronize the UI with the actual system state when the app starts or after permission is granted.
+---
+
+**Feature 2: Adaptive Brightness Toggle**
+*   **Objective:** Allow the user to toggle adaptive brightness (auto brightness) on or off.
+*   **UI (`MainScreen.kt`):**
+    *   Added an `AdaptiveBrightnessControl` Composable. This contains a `Text` label ("Adaptive Brightness") and a `Switch` Composable.
+    *   The `Switch` `checked` state is bound to `mainViewModel.isAdaptiveBrightnessEnabled.collectAsState()`.
+    *   The `Switch` `enabled` state is also bound to `hasWriteSettingsPermission` (same permission as master brightness).
+    *   On checked change, if permission is granted, it calls `mainViewModel.setAdaptiveBrightnessEnabled(newState)`. Otherwise, it triggers the same `requestPermission()` flow used for master brightness.
+    *   A small text message appears below the switch if permission is not granted.
+*   **ViewModel (`MainViewModel.kt`):**
+    *   `isAdaptiveBrightnessEnabled`: `MutableStateFlow<Boolean>` to hold the current state.
+    *   `loadInitialAdaptiveBrightnessState()`:
+        *   Called in `init {}`.
+        *   Reads `Settings.System.SCREEN_BRIGHTNESS_MODE` using `contentResolver`.
+        *   Updates `_isAdaptiveBrightnessEnabled` based on whether the mode is `SCREEN_BRIGHTNESS_MODE_AUTOMATIC`.
+        *   Handles `Settings.SettingNotFoundException` (defaults to false/manual).
+    *   `setAdaptiveBrightnessEnabled(enabled: Boolean)`:
+        *   Sets the system brightness mode to `Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC` or `Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL`.
+        *   This operation also requires `android.permission.WRITE_SETTINGS`.
+        *   Updates `_isAdaptiveBrightnessEnabled` StateFlow.
+        *   If adaptive brightness is turned off (i.e., `enabled` is false), it calls `loadInitialBrightness()` to refresh the manual brightness value, as the system might have changed it while adaptive mode was on.
+*   **Permissions:**
+    *   This feature relies on the same `android.permission.WRITE_SETTINGS` permission as Feature 1. The existing permission handling logic in `MainScreen.kt` covers this feature as well. No new permissions are needed.
+*   **Technical Challenges/Notes:**
+    *   The primary challenge is ensuring the `WRITE_SETTINGS` permission is handled correctly, which is already addressed.
+    *   When toggling adaptive brightness off, it's good practice to refresh the manual brightness value from the system, as it might have been altered by the adaptive algorithm. This is handled by calling `loadInitialBrightness()`.
+---
+
+**Feature 3: Device Temperature Monitor**
+*   **Objective:** Display the device's battery temperature as a proxy for overall device temperature.
+*   **UI (`MainScreen.kt`):**
+    *   Added a `DeviceTemperatureDisplay` Composable which shows a `Text` label "Device Temperature: " followed by the temperature value (e.g., "25.3°C").
+    *   The temperature value is collected from `mainViewModel.deviceTemperature.collectAsState()`.
+*   **ViewModel (`MainViewModel.kt`):**
+    *   `deviceTemperature`: `MutableStateFlow<String>` (already existed, initialized to "N/A").
+    *   `updateTemperature(temp: String)`: Function (already existed) to update `_deviceTemperature.value`. This is called by the broadcast receiver.
+*   **BroadcastReceiver (`BatteryTemperatureReceiver.kt`):**
+    *   Created `BatteryTemperatureReceiver` in `receiver` package.
+    *   Constructor accepts a lambda `onTemperatureChanged: (String) -> Unit`.
+    *   `onReceive(context: Context?, intent: Intent?)`:
+        *   Checks for `Intent.ACTION_BATTERY_CHANGED`.
+        *   Extracts temperature using `intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1)`. The value is in tenths of a degree Celsius.
+        *   Converts the value to degrees Celsius (e.g., 253 -> 25.3°C).
+        *   Formats the string (e.g., "25.3°C") and calls `onTemperatureChanged` lambda.
+        *   If temperature extra is not found, calls `onTemperatureChanged("N/A")`.
+*   **Receiver Registration (`MainScreen.kt`):**
+    *   Uses `DisposableEffect(context, mainViewModel)` to manage the lifecycle of the receiver.
+    *   Inside `DisposableEffect`:
+        *   An instance of `BatteryTemperatureReceiver` is created, passing `mainViewModel::updateTemperature` as the callback.
+        *   An `IntentFilter` for `Intent.ACTION_BATTERY_CHANGED` is created.
+        *   `context.registerReceiver(receiver, filter)` is called.
+    *   In the `onDispose` block of `DisposableEffect`:
+        *   `context.unregisterReceiver(receiver)` is called to prevent leaks.
+*   **Permissions (`AndroidManifest.xml`):**
+    *   `Intent.ACTION_BATTERY_CHANGED` is a protected broadcast that apps can receive without explicit runtime permission requests, provided they are registered to listen for it (either dynamically or statically for some cases).
+    *   The `BATTERY_STATS` permission in the manifest is generally for accessing more detailed battery usage statistics and not strictly required for just receiving the temperature via `ACTION_BATTERY_CHANGED` in a dynamically registered receiver.
+*   **Technical Challenges/Notes:**
+    *   **Proxy for Device Temp:** Battery temperature is the most accessible and commonly used proxy for overall device temperature. Actual CPU/GPU temperatures are often not available to third-party apps without special (often root or manufacturer-specific) permissions.
+    *   **Dynamic Registration:** Chosen for this receiver because the temperature is relevant only when the UI is visible. `DisposableEffect` ensures the receiver is active only when `MainScreen` is composed and cleans up properly.
+    *   **Data Conversion:** `EXTRA_TEMPERATURE` provides data in tenths of a degree Celsius.
+    *   The initial value for temperature is "N/A" until the first `ACTION_BATTERY_CHANGED` intent is received.
+---
+
+**Feature 4: Shortcut to "Disable HW Overlays" (Developer Options)**
+*   **Objective:** Provide a button to take the user directly to the Developer Options system settings screen.
+*   **UI (`MainScreen.kt`):**
+    *   A `SettingsShortcutButton` Composable was added. This is a generic button.
+    *   An instance of `SettingsShortcutButton` is used in `MainScreen` with the label "Open Developer Options".
+    *   `onClick` for this button:
+        *   Creates an `Intent` with `Settings.ACTION_DEVELOPER_SETTINGS`.
+        *   Starts the activity for this intent.
+        *   Includes a check `intent.resolveActivity(context.packageManager) != null` to ensure an activity can handle it (e.g., Developer Options might be hidden if not enabled by the user).
+        *   Includes basic error logging for `SecurityException` or other `Exception`s during intent launch.
+*   **Functionality Notes:**
+    *   **Limitation:** Apps cannot programmatically change settings within Developer Options due to Android security restrictions. This feature is purely a shortcut to the relevant settings page.
+    *   The "Disable HW Overlays" setting itself is located within Developer Options. The user must toggle it manually.
+    *   If Developer Options are not enabled on the device, `Settings.ACTION_DEVELOPER_SETTINGS` might not resolve to an activity, and the button click might do nothing or lead to an error if not handled. The `resolveActivity` check helps mitigate crashes, and logging/Toast can inform the user.
+*   **Permissions:**
+    *   No special permissions are required to launch the `Settings.ACTION_DEVELOPER_SETTINGS` intent.
+---
+
+**Feature 5: Shortcut to Display Color Settings**
+*   **Objective:** Provide a button to take the user to the system's Display Settings page, where they can adjust color profiles if available.
+*   **UI (`MainScreen.kt`):**
+    *   Utilized the existing `SettingsShortcutButton` Composable.
+    *   An instance is added with the label "Open Display Color Settings".
+    *   `onClick` for this button:
+        *   Creates an `Intent` with `Settings.ACTION_DISPLAY_SETTINGS`.
+        *   Starts the activity for this intent.
+        *   Includes the same `resolveActivity` check and error logging as Feature 4.
+*   **Functionality Notes:**
+    *   **Limitation:** Programmatically changing system-wide display color profiles (e.g., 'Natural', 'Boosted', 'Vivid') is not a standard public Android API. These settings are often manufacturer-specific and controlled deep within system settings.
+    *   This button acts as a shortcut to the general display settings page (`ACTION_DISPLAY_SETTINGS`), which is the most relevant standard location where users *might* find such color profile options, depending on their device and Android version.
+    *   The app cannot directly read or alter the specific color profile setting.
+*   **Permissions:**
+    *   No special permissions are required to launch the `Settings.ACTION_DISPLAY_SETTINGS` intent.
+---
