@@ -1,0 +1,14 @@
+{
+  "name": "Generative Art",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "postCreateCommand": "pip install -r requirements.txt && sudo apt-get update && sudo apt-get install -y ffmpeg",
+  "customizations": {
+    "codespaces": {
+      "openFiles": [
+        "generative_art.py"
+      ]
+    }
+  }
+}
